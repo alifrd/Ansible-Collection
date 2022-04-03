@@ -1,0 +1,138 @@
+- name: Configure All DB
+  hosts: Databases
+  become: True
+  vars_files:
+      - files/vars.yml
+  tasks:
+
+  # Dns setting
+  - name: Update entry into /etc/resolv.conf
+    lineinfile:
+      path: /etc/resolv.conf
+      line: 'nameserver 8.8.8.8'
+  
+  # delete config
+  - name: Remove config file
+    file:
+      path: /etc/mysql/my.cnf
+      state: absent
+  
+  #update apt   
+  - name: update
+    apt: update_cache=yes   
+    ignore_errors: yes      
+
+  #install packages
+  - name: "install Mariadb and dep.." 
+    apt:
+      pkg:
+        - python3-mysqldb
+        - mariadb-server 
+        - mariadb-client
+      state: latest 
+    
+
+  - name: Restart MariaDB 
+    service: name=mysql state=restarted
+
+  - name: update mysql root password for root account
+    mysql_user:
+      name: root
+      login_user: root
+      login_password: '{{ mysql_root_password }}'
+      login_unix_socket: /var/run/mysqld/mysqld.sock
+      host: 'localhost'
+      password: '{{ mysql_root_password }}'
+      priv: "*.*:ALL,GRANT"
+      check_implicit_admin: true
+
+  - name: ufw rules
+    service: name=ufw state=stopped
+
+
+
+
+
+
+- name: Configure DB master
+  hosts: Master
+  become: True
+  vars_files:
+      - files/vars.yml
+  tasks:
+  - name: copy mariadb config file
+    template: 
+      src : templates/master.conf.j2
+      dest : /etc/mysql/my.cnf
+  - name: Restart MariaDB 
+    service: name=mysql state=restarted
+  - name: stop Slave in Master Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'stop slave;'
+  - name: reset Slave in Master Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'reset slave all;'
+  - name: create Replica user in Master Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'CREATE USER "{{ replicaUser }}"@"%" IDENTIFIED BY "{{ replicaPass }}";'
+  - name: grant Replica user in Master Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'GRANT REPLICATION SLAVE ON *.* TO "{{ replicaUser }}"@"%";'
+  - name: flush privilage in Master Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'FLUSH PRIVILEGES;'
+  
+- name: Configure DB slave
+  hosts: Databases
+  become: True
+  vars_files:
+      - files/vars.yml
+  tasks:
+  - name: copy mariadb config file
+    template: 
+      src : templates/slave.conf.j2
+      dest : /etc/mysql/my.cnf
+    when: inventory_hostname in groups['Slave']
+  
+  - name: Restart MariaDB 
+    service: name=mysql state=restarted
+  
+  - name: find master bin file
+    shell: mysql --user=root --password=alifrd -e " show master status" | grep "mariadb-bin" | awk '{print $1 " "}'
+    register: mysqlbin
+    when: inventory_hostname in groups['Master']
+
+  - name: find master pos bin file
+    shell: mysql --user=root --password=alifrd -e " show master status" | grep "mariadb-bin" | awk '{print $2 " "}'
+    register: mysqlpos
+    when: inventory_hostname in groups['Master']
+  
+  - name: Setting host facts mysqlbin
+    set_fact: 
+      mysqlBinFile="{{ mysqlbin }}" 
+      mysqlPosNum="{{ mysqlpos }}"
+    delegate_to: all  
+  - debug: var=hostvars[groups['Master'][0]]['mysqlBinFile']['stdout']
+  
+  - name: Setting facts mysqlbin
+    set_fact: 
+      GTID: "{{hostvars[item].gtidpos.stdout_lines[1]}}"
+    with_items: "{{ groups['Master'] }}"
+  
+  - debug:
+      var: GTID
+
+
+
+
+
+  - name: stop Slave in Slave Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'stop slave;'
+    when: inventory_hostname in groups['Slave']
+
+
+#  - name: connect to master
+#    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e "CHANGE MASTER TO MASTER_HOST='{{ masterIP }}',MASTER_USER='{{ replicaUser }}',MASTER_PASSWORD='{{ replicaPass }}',MASTER_PORT=3306,MASTER_LOG_FILE='{{hostvars[groups['Master'][0]]['mysqlBinFile']['stdout']}}' ,MASTER_LOG_POS={{hostvars[groups['Master'][0]]['mysqlPosNum']['stdout']}} ,MASTER_CONNECT_RETRY=10;"
+#    when: inventory_hostname in groups['Slave']
+
+
+  - name: start Slave in Slave Mysql
+    command: /usr/bin/mysql --user=root --password="{{ mysql_root_password }}" -e 'start slave;'
+    when: inventory_hostname in groups['Slave']
+
+   

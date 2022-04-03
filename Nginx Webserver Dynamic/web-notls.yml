@@ -1,0 +1,73 @@
+- name: Configure webserver with nginx
+  hosts: Webservers
+  become: True
+  vars:
+      test1: "HI Mehdi WebPage"
+  vars_files:
+      - files/vars.yml
+  tasks:
+
+  # Dns setting
+    - name: Update entry into /etc/resolv.conf
+      lineinfile:
+        path: /etc/resolv.conf
+        line: 'nameserver 8.8.8.8'
+
+  # Firewall setting
+    - name: ufw rules
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+  
+  # Nginx setting 
+    - name: install nginx
+      apt: name=nginx update_cache=yes
+  
+    - name: restart nginx
+      service: name=nginx state=restarted
+
+
+  #php packages isntall
+    - name: raw php
+      apt: name=php state=present
+    - name: php-fpm
+      apt: name=php-fpm state=present
+ 
+    - name: restart php7.4-fpm
+      service: name=php7.4-fpm state=restarted
+
+
+    - name: Creates directory in /var/www
+      file:
+        path: "/var/www/{{ domainName }}"
+        state: directory
+        owner: "{{ Username }}"
+        group: "{{ Username }}"
+        mode: 0755
+        recurse: yes
+
+
+    - name: copy nginx config file
+      template: 
+        src : templates/nginx.conf.j2
+        dest : "/etc/nginx/sites-available/{{ domainName }}"
+
+    - name: enable configuration
+      file:
+        dest : "/etc/nginx/sites-enabled/{{ domainName }}"
+        src : "/etc/nginx/sites-available/{{ domainName }}"
+        state : link
+    
+    - name: copy index.php
+      copy: 
+        src : files/index.php 
+        dest : "/var/www/{{ domainName }}/index.php"
+        mode : 0755
+  
+    - name: reload nginx
+      service: name=nginx state=reloaded
+  
+
+
+
